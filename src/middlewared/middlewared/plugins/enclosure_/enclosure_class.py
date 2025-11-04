@@ -62,6 +62,8 @@ class Enclosure:
             self.sysfs_map = map_disks_to_enclosure_slots(self)
             self.disks_map = self._get_array_device_mapping_info(slot_designation)
             self.elements = self._parse_elements(elements)
+            # Create synthetic Array Device Slots if needed (e.g., for HBAs)
+            self._create_synthetic_array_device_slots()
         return self
 
     def asdict(self):
@@ -376,6 +378,83 @@ class Enclosure:
             final[element_type[0]].update({mapped_slot: parsed})
 
         return final
+
+    def _create_synthetic_array_device_slots(self):
+        """Create synthetic Array Device Slot elements for enclosures that have
+        sysfs disk mappings but don't report Array Device Slots via SES.
+
+        This commonly happens with HBAs that support basic enclosure services
+        but don't report traditional Array Device Slot elements. We synthesize
+        these elements from the sysfs mappings to display drives in the GUI.
+
+        By default, only populated slots (with actual drives) are shown to avoid
+        cluttering the GUI with dozens of empty slots on HBAs with many ports.
+        """
+        # Only create synthetic slots if:
+        # 1. We have sysfs disk mappings (drives are connected)
+        # 2. SES didn't report Array Device Slots
+        if not self.sysfs_map or 'Array Device Slot' in self.elements:
+            return
+
+        logger.info('Creating synthetic Array Device Slots for enclosure %s (%s)', self.pci, self.encname)
+
+        # Mark this as a synthetic enclosure
+        original_model = self.model
+        self.model = 'SyntheticHBA'
+        self.encname = f'HBA Enclosure ({self.pci})'
+        self.controller = False  # HBAs are not the head unit
+
+        # Create Array Device Slot elements
+        self.elements['Array Device Slot'] = {}
+        disk_position_mapping = self.determine_disk_slot_positions()
+
+        # Default behavior: only show populated slots (where base_dev.name is not None)
+        # This prevents showing 40 empty slots on an HBA with only 2 drives
+        # Future enhancement: make this configurable per-device
+        populated_slots = {slot: dev for slot, dev in self.sysfs_map.items() if dev.name is not None}
+
+        if not populated_slots:
+            # No drives connected, don't create synthetic slots
+            logger.info('No populated slots found for %s, skipping synthetic slot creation', self.pci)
+            return
+
+        for slot_num, base_dev in populated_slots.items():
+            # Since we filtered for populated slots, status is always OK
+            status = 'OK'
+            value_raw = 0x1000000  # Device present (same as NVMe fake enclosures)
+
+            # Create the Array Device Slot entry
+            slot_entry = {
+                'descriptor': f'Slot {slot_num}',
+                'status': status,
+                'value': None,
+                'value_raw': value_raw,
+                'dev': base_dev.name,
+                SUPPORTS_IDENTIFY_KEY: True,  # sysfs supports LED control via locate file
+                DRIVE_BAY_LIGHT_STATUS: base_dev.locate,
+                'original': {
+                    'enclosure_id': self.encid,
+                    'enclosure_sg': self.sg,
+                    'enclosure_bsg': self.bsg,
+                    'descriptor': f'slot{slot_num}',
+                    'slot': slot_num,
+                }
+            }
+
+            # Add disk position info (front/rear/internal/top)
+            slot_entry.update(disk_position_mapping.get(slot_num, {
+                DISK_FRONT_KEY: False,
+                DISK_REAR_KEY: False,
+                DISK_TOP_KEY: False,
+                DISK_INTERNAL_KEY: True,  # Default to internal for HBA drives
+            }))
+
+            self.elements['Array Device Slot'][slot_num] = slot_entry
+
+        logger.info(
+            'Created %d synthetic Array Device Slots for %s (originally detected as %s)',
+            len(populated_slots), self.pci, original_model or 'unknown'
+        )
 
     @property
     def model(self):

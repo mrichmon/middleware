@@ -56,6 +56,14 @@ def combine_enclosures(enclosures):
     for idx, enclosure in enumerate(enclosures):
         if to_ignore(enclosure):
             continue
+        elif enclosure['model'] == 'SyntheticHBA':
+            # Enclosures with synthetic Array Device Slots (like HBAs) should be kept separate
+            # They're not part of the head unit's drive bay structure
+            continue
+        elif 'Array Device Slot' not in enclosure['elements']:
+            # Some enclosures don't have Array Device Slot elements
+            # Nothing to combine for these, so skip further processing
+            continue
         elif enclosure['model'] == ControllerModels.R40.value:
             r40_sas_ids.append((int(f'0x{enclosure["id"]}', 16), idx, enclosure['pci']))
             if len(r40_sas_ids) == 2:

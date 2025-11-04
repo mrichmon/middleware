@@ -156,6 +156,18 @@ class Enclosure2Service(Service):
 
         combine_enclosures(enclosures)
 
-        enclosures = sorted(enclosures, key=lambda enclosure: (0 if enclosure["controller"] else 1, enclosure['id']))
+        # Sort enclosures:
+        # 1. Controller enclosures first (head unit)
+        # 2. Regular non-controller enclosures second
+        # 3. Synthetic enclosures last (e.g., HBAs with synthetic Array Device Slots)
+        # Within each group, sort by enclosure ID
+        enclosures = sorted(
+            enclosures,
+            key=lambda enclosure: (
+                0 if enclosure["controller"] else 1,
+                1 if enclosure["model"] == 'SyntheticHBA' else 0,
+                enclosure['id']
+            )
+        )
 
         return filter_list(enclosures, filters, options)
